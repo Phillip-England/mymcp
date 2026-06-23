@@ -107,7 +107,6 @@ func performWriteRequest(t *testing.T, path, mode, contents string) *httptest.Re
 		query.Set("mode", mode)
 	}
 	request := httptest.NewRequest(http.MethodPost, "/tool/write?"+query.Encode(), strings.NewReader(contents))
-	request.Header.Set(sandboxHeader, existingTestDirectory(path))
 	response := httptest.NewRecorder()
 	newRouter().ServeHTTP(response, request)
 	return response

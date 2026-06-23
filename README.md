@@ -1,39 +1,36 @@
 # mymcp
 
-`mymcp` is a small HTTP server and Go SDK that give an LLM harness a controlled
-set of filesystem tools. It can list directories, inspect a directory tree, read
-files, and create or update files. The server returns plain text so tool output
-stays easy for a model to parse and for a human to inspect while debugging.
+`mymcp` is a small HTTP tool server and Go SDK for LLM harnesses. It exposes a
+deliberately narrow set of loop-control and filesystem operations. Responses are
+plain text so models can consume them directly and humans can inspect them while
+debugging.
 
 The `/map` endpoint is the machine-oriented tool manual. It contains precise
-request shapes, valid and invalid examples, and response meanings for an LLM to
-digest. This README explains the project for people operating or extending it.
+request shapes, validated examples, rejection rules, and response meanings for
+an LLM to digest. This README is the human-facing guide for operating and
+extending it.
 
-## Filesystem sandbox
+## Design
 
-Every request to `/tool/ls`, `/tool/read`, `/tool/tree`, or `/tool/write` must include an
-`X-Mymcp-Sandbox` header. Its value is the directory that request may access:
+The project keeps three views of the protocol aligned:
 
-```text
-X-Mymcp-Sandbox: /workspace/my-project
-```
+1. `internal/protocol` is the single endpoint catalog used for SDK validation.
+2. `server.go` attaches one HTTP handler to every catalog entry and refuses to
+   start when an entry is missing or unrecognized.
+3. `/map` generates model instructions from the same catalog, so route examples
+   and endpoint descriptions cannot silently drift from SDK routing.
 
-The restriction is request-scoped, so a harness can assign a different workspace
-to each model, session, or request. Relative target paths are resolved from the
-sandbox directory. Absolute target paths work only when they resolve to the
-sandbox directory or one of its descendants.
+The tool surface is intentionally small. Loop control needs `success` and
+`error`; filesystem work needs focused listing, recursive inspection, reading,
+and writing. Directory mutation and deletion are omitted because they are not
+required for the core workflow and are especially risky without a sandbox.
 
-The server canonicalizes the sandbox and target paths before access. It rejects
-`..` traversal, absolute paths outside the sandbox, and symlinks that resolve
-outside it with `403 Forbidden`. The header itself must name an existing
-directory. `/` and `/map` do not access files, so they do not require the header;
-a harness may still attach it consistently to every request.
+## Filesystem access
 
-This check confines normal tool requests, but it is not a replacement for an OS
-security boundary. A hostile local process could race path validation by changing
-symlinks, and a compromised server process is not constrained by an HTTP header.
-Run the server in a container, VM, or restricted operating-system account when
-the threat model includes untrusted local processes or arbitrary code execution.
+Filesystem endpoints accept paths directly. Relative paths resolve from the
+server process's working directory, and absolute paths are used as supplied.
+There is no application-level sandbox, so run the server with the operating-system
+permissions and isolation appropriate for its users.
 
 ## Running the server
 
@@ -58,6 +55,28 @@ curl http://localhost:8765/map
 
 ## Tools
 
+Tools are grouped into control and filesystem categories. Paths remain directly
+under `/tool` because six routes do not justify deeper URL nesting.
+
+### Finish the agentic loop
+
+`POST /tool/success` and `POST /tool/error` take a required final message as
+plain text. Both return `200 OK` with that message and an `X-Mymcp-Terminal`
+header set to `success` or `error`. A harness must stop the loop when that header
+is present and surface the message to the user.
+
+```bash
+curl -X POST --data-binary 'The goal is complete.' \
+  http://localhost:8765/tool/success
+
+curl -X POST --data-binary 'Cannot complete the goal: credentials are missing.' \
+  http://localhost:8765/tool/error
+```
+
+Messages must contain non-whitespace text and may be at most 65536 bytes.
+
+## Filesystem Tools
+
 ### List one directory
 
 `GET /tool/ls` takes a directory path as its plain-text body and lists only its
@@ -66,8 +85,7 @@ size, and name. Directory sizes are the recursive sum of regular-file content.
 
 ```bash
 curl -X GET \
-  -H 'X-Mymcp-Sandbox: /workspace/my-project' \
-  --data 'docs' \
+  --data '/workspace/my-project/docs' \
   http://localhost:8765/tool/ls
 ```
 
@@ -79,8 +97,7 @@ size, and full path. Directory sizes are recursive regular-file-content totals.
 
 ```bash
 curl -X GET \
-  -H 'X-Mymcp-Sandbox: /workspace/my-project' \
-  --data 'docs' \
+  --data '/workspace/my-project/docs' \
   http://localhost:8765/tool/tree
 ```
 
@@ -93,13 +110,11 @@ surrounded by clear `FILE` and `END FILE` markers.
 
 ```bash
 curl -X GET \
-  -H 'X-Mymcp-Sandbox: /workspace/my-project' \
-  --data 'README.md' \
+  --data '/workspace/my-project/README.md' \
   http://localhost:8765/tool/read
 
 curl -X GET \
-  -H 'X-Mymcp-Sandbox: /workspace/my-project' \
-  --data 'docs' \
+  --data '/workspace/my-project/docs' \
   'http://localhost:8765/tool/read?recursive=true'
 ```
 
@@ -112,14 +127,12 @@ their parent directory must already exist.
 
 ```bash
 curl -X POST \
-  -H 'X-Mymcp-Sandbox: /workspace/my-project' \
   --data-binary 'replacement content' \
-  'http://localhost:8765/tool/write?path=notes.txt&mode=overwrite'
+  'http://localhost:8765/tool/write?path=%2Fworkspace%2Fmy-project%2Fnotes.txt&mode=overwrite'
 
 curl -X POST \
-  -H 'X-Mymcp-Sandbox: /workspace/my-project' \
   --data-binary 'additional content' \
-  'http://localhost:8765/tool/write?path=notes.txt&mode=append'
+  'http://localhost:8765/tool/write?path=%2Fworkspace%2Fmy-project%2Fnotes.txt&mode=append'
 ```
 
 To edit or delete part of a file, read it first, modify the returned content in
@@ -130,12 +143,11 @@ overwrite body empties the file.
 
 An LLM does not call this server directly. It emits a JSON object describing the
 HTTP request it wants to make, and a host application's harness passes that JSON
-to the SDK. The SDK performs four jobs:
+to the SDK. The SDK performs three jobs:
 
 1. Decode the model's JSON using the request shape documented by `/map`.
 2. Confirm the method, path, and query map to a known `mymcp` endpoint.
-3. Inject the harness-configured sandbox, overriding any sandbox chosen by the model.
-4. Make the HTTP request and return its status, headers, and body.
+3. Make the HTTP request and return its status, headers, body, and terminal outcome.
 
 Install the SDK from this module:
 
@@ -143,8 +155,7 @@ Install the SDK from this module:
 go get github.com/phillip-england/mymcp/sdk
 ```
 
-Create one client for a server and trusted workspace, then pass model output to
-`RouteJSON`:
+Create one client for a server, then pass the model's JSON string to `Route`:
 
 ```go
 package main
@@ -158,26 +169,30 @@ import (
 )
 
 func main() {
-	client, err := sdk.NewClient("http://localhost:8765", "/workspace/my-project")
+	client, err := sdk.NewClient("http://localhost:8765")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	modelJSON := []byte(`{
-        "method": "GET",
-        "path": "/tool/ls",
-        "body": "docs"
-    }`)
-	response, err := client.RouteJSON(context.Background(), modelJSON)
+	modelJSON := `{
+		"method": "GET",
+		"path": "/tool/ls",
+		"body": "/workspace/my-project/docs"
+	}`
+	response, err := client.Route(context.Background(), modelJSON)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	fmt.Printf("status: %d\n%s", response.StatusCode, response.Text())
+	if response.Terminal {
+		fmt.Printf("loop finished with %s\n", response.Outcome)
+	}
 }
 ```
 
-The accepted JSON fields are `method`, `path`, optional string-to-string
+`RouteJSON` remains available when the harness already has a byte slice. The
+accepted JSON fields are `method`, `path`, optional string-to-string
 `headers`, and optional string `body`. Unknown fields, malformed JSON, absolute
 URLs, unknown endpoints, incorrect methods, and unsupported query parameters are
 rejected without making a network request. Server responses, including `4xx` and
@@ -185,33 +200,55 @@ rejected without making a network request. Server responses, including `4xx` and
 server's actionable error text. Transport and JSON-routing failures are returned
 as Go errors.
 
-The SDK sandbox is intentionally configured outside model JSON. This prevents a
-model from expanding its own filesystem access by generating a different
-`X-Mymcp-Sandbox` header.
+For `/tool/success` and `/tool/error`, `Response.Terminal` is true and
+`Response.Outcome` is `sdk.OutcomeSuccess` or `sdk.OutcomeError`. Stop the
+agentic loop and use `Response.Text()` as its final user-facing message.
 
 ## Request logging
 
-The server logs each request's method, URL, response status, response size,
-duration, and remote address. File contents and the sandbox header are not logged.
+The server logs each request in a compact, human-readable format:
+
+```text
+[METHOD][PATH][STATUS][DURATION]
+```
+
+Query parameters and file contents are not logged.
 
 ## Development
 
 Format and verify the project with:
 
 ```bash
-gofmt -w *.go
-go test ./...
-go vet ./...
+make fmt
+make check
 ```
+
+The tests execute every model-facing catalog example through the SDK validator.
+This catches stale documentation as part of the normal test suite.
+
+## Adding A Tool
+
+Keep additions narrow and follow the existing dependency direction:
+
+1. Add one endpoint entry in `internal/protocol/endpoints.go`, including its
+   category, request contract, valid JSON example, and response meaning.
+2. Implement a small HTTP handler in a tool-specific file. Move reusable domain
+   logic into a separate helper rather than growing the handler.
+3. Attach the handler by endpoint name in `server.go`.
+4. Add focused handler tests. `TestCatalogExamplesAreRoutable` and
+   `TestMapDocumentsEveryEndpointWithJSONExamples` cover the shared wiring.
+
+Do not add a tool when an existing endpoint can express the operation clearly.
+Do not put tool-specific routing rules in the SDK; the shared catalog owns them.
 
 ## Project layout
 
 - `server.go` connects shared endpoint definitions to HTTP handlers.
 - `internal/protocol` is the shared server/SDK endpoint contract.
 - `tool_http.go` contains request parsing and response helpers shared by tools.
-- `sandbox.go` validates and confines filesystem paths.
 - `filesystem.go` contains reusable filesystem inspection operations.
-- `ls.go`, `tree.go`, `read.go`, and `write.go` are thin tool handlers.
+- `terminal.go` implements terminal success and error control tools.
+- `ls.go`, `tree.go`, `read.go`, and `write.go` are thin filesystem tool handlers.
 - `map.go` contains the model-facing endpoint guide returned by `/map`.
 - `middleware.go` contains request logging.
 - `sdk/client.go` handles HTTP transport, while `sdk/request.go` validates and

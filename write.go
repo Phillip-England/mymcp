@@ -19,10 +19,6 @@ func writeHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path query parameter must contain a file path", http.StatusBadRequest)
 		return
 	}
-	path, err := resolveSandboxPath(r, path)
-	if handlePathResolutionError(w, err) {
-		return
-	}
 
 	mode := r.URL.Query().Get("mode")
 	flags, err := writeFlags(mode)

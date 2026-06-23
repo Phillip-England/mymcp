@@ -16,7 +16,7 @@ func readHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	root, ok := sandboxedPathFromBody(
+	root, ok := pathFromBody(
 		w,
 		r,
 		"request body must contain a path of at most 4096 bytes",

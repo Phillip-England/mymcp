@@ -38,10 +38,12 @@ func decodeAndRoute(payload []byte) (JSONRequest, *url.URL, error) {
 	if request.Method != endpoint.Method {
 		return request, nil, fmt.Errorf("%s requires method %s", target.Path, endpoint.Method)
 	}
-	for key := range target.Query() {
-		if !endpoint.AllowsQuery(key) {
-			return request, nil, fmt.Errorf("unsupported query parameter %q for %s", key, target.Path)
-		}
+	query, err := url.ParseQuery(target.RawQuery)
+	if err != nil {
+		return request, nil, fmt.Errorf("invalid query string: %w", err)
+	}
+	if err := endpoint.ValidateQuery(query); err != nil {
+		return request, nil, err
 	}
 	return request, target, nil
 }

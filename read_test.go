@@ -17,13 +17,9 @@ func TestReadRouteReadsSingleFile(t *testing.T) {
 
 	response := performReadRequest(t, path, false)
 
-	resolvedPath, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "===== FILE: " + resolvedPath + " =====\n" +
+	want := "===== FILE: " + path + " =====\n" +
 		"first line\nsecond line\n" +
-		"===== END FILE: " + resolvedPath + " =====\n\n"
+		"===== END FILE: " + path + " =====\n\n"
 	if response.Code != http.StatusOK || response.Body.String() != want {
 		t.Fatalf("status = %d, body = %q; want status 200, body %q", response.Code, response.Body.String(), want)
 	}
@@ -82,7 +78,6 @@ func TestReadRouteRejectsInvalidInput(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodGet, "/tool/read"+tt.query, strings.NewReader(tt.path))
-			request.Header.Set(sandboxHeader, existingTestDirectory(tt.path))
 			response := httptest.NewRecorder()
 			newRouter().ServeHTTP(response, request)
 			if response.Code != tt.wantStatus {
@@ -117,7 +112,6 @@ func performReadRequest(t *testing.T, path string, recursive bool) *httptest.Res
 		requestPath += "?recursive=true"
 	}
 	request := httptest.NewRequest(http.MethodGet, requestPath, strings.NewReader(path))
-	request.Header.Set(sandboxHeader, existingTestDirectory(path))
 	response := httptest.NewRecorder()
 	newRouter().ServeHTTP(response, request)
 	return response

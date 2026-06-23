@@ -1,13 +1,50 @@
 package main
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/phillip-england/mymcp/internal/protocol"
 )
+
+func TestSkillCommandWritesEmbeddedSkillFile(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "SKILL.md")
+	var stdout bytes.Buffer
+
+	if err := run([]string{"skill", destination}, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run skill command: %v", err)
+	}
+
+	written, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatalf("read written skill file: %v", err)
+	}
+	want, err := os.ReadFile("SKILL.md")
+	if err != nil {
+		t.Fatalf("read source skill file: %v", err)
+	}
+	if string(written) != string(want) {
+		t.Fatalf("written skill file does not match embedded SKILL.md")
+	}
+	if got, want := stdout.String(), "wrote "+destination+"\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestSkillCommandRequiresPath(t *testing.T) {
+	err := run([]string{"skill"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("run skill command succeeded without path")
+	}
+	if !strings.Contains(err.Error(), "usage: mymcp skill <path>") {
+		t.Fatalf("error = %q, want usage", err.Error())
+	}
+}
 
 func TestRoutes(t *testing.T) {
 	tests := []struct {
@@ -53,22 +90,27 @@ func TestMapDocumentsEveryEndpointWithJSONExamples(t *testing.T) {
 
 	body := response.Body.String()
 	for _, want := range []string{
-		"GET /\n",
-		"GET /map\n",
-		"GET /tool/ls\n",
-		"GET /tool/read\n",
-		"GET /tool/tree\n",
-		"POST /tool/write\n",
-		"Valid request:",
-		"Invalid request",
-		"read-modify-overwrite",
-		"FILESYSTEM SANDBOX RULES:",
-		`"headers": {"X-Mymcp-Sandbox": "/workspace"}`,
-		`"method": "GET"`,
-		`"body": "/workspace/README.md"`,
+		"Send exactly one JSON object per request.",
+		"=== SERVER ===",
+		"=== CONTROL ===",
+		"=== FILESYSTEM ===",
+		"Valid request JSON:",
+		"X-Mymcp-Terminal: error",
+		"X-Mymcp-Terminal: success",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("map body does not contain %q", want)
+		}
+	}
+	for _, endpoint := range protocol.Endpoints() {
+		for _, want := range []string{
+			endpoint.Method + " " + endpoint.Path + "\n",
+			endpoint.Purpose,
+			endpoint.Example,
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("map does not document %s: missing %q", endpoint.Name, want)
+			}
 		}
 	}
 }
@@ -81,6 +123,22 @@ func TestRoutesRejectOtherMethods(t *testing.T) {
 
 	if response.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestRoutesRejectUnsupportedAndRepeatedQueryParameters(t *testing.T) {
+	for _, path := range []string{
+		"/tool/ls?recursive=true",
+		"/tool/read?recursive=true&recursive=false",
+		"/tool/read?recursive=true;depth=2",
+	} {
+		request := httptest.NewRequest(http.MethodGet, path, strings.NewReader("."))
+		response := httptest.NewRecorder()
+		newRouter().ServeHTTP(response, request)
+
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("%s returned status %d, want 400", path, response.Code)
+		}
 	}
 }
 
@@ -98,23 +156,18 @@ func TestTreeRoute(t *testing.T) {
 	}
 
 	request := httptest.NewRequest(http.MethodGet, "/tool/tree", strings.NewReader(root))
-	request.Header.Set(sandboxHeader, root)
 	response := httptest.NewRecorder()
 	newRouter().ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
-	resolvedRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		t.Fatal(err)
-	}
 	want := strings.Join([]string{
 		"TYPE\tSIZE_BYTES\tPATH",
-		"directory\t11\t" + resolvedRoot,
-		"file\t6\t" + filepath.Join(resolvedRoot, "README.md"),
-		"directory\t5\t" + filepath.Join(resolvedRoot, "docs"),
-		"file\t5\t" + filepath.Join(resolvedRoot, "docs", "guide.txt"),
+		"directory\t11\t" + root,
+		"file\t6\t" + filepath.Join(root, "README.md"),
+		"directory\t5\t" + filepath.Join(root, "docs"),
+		"file\t5\t" + filepath.Join(root, "docs", "guide.txt"),
 		"",
 	}, "\n")
 	if response.Body.String() != want {
@@ -136,7 +189,6 @@ func TestLSRouteListsDirectChildrenWithSizes(t *testing.T) {
 	}
 
 	request := httptest.NewRequest(http.MethodGet, "/tool/ls", strings.NewReader(root))
-	request.Header.Set(sandboxHeader, root)
 	response := httptest.NewRecorder()
 	newRouter().ServeHTTP(response, request)
 
@@ -153,7 +205,6 @@ func TestLSRouteRejectsFilePath(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/tool/ls", strings.NewReader(path))
-	request.Header.Set(sandboxHeader, root)
 	response := httptest.NewRecorder()
 	newRouter().ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
@@ -183,7 +234,6 @@ func TestTreeRouteRejectsInvalidPaths(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodGet, "/tool/tree", strings.NewReader(tt.body))
-			request.Header.Set(sandboxHeader, existingTestDirectory(tt.body))
 			response := httptest.NewRecorder()
 			newRouter().ServeHTTP(response, request)
 

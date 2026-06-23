@@ -7,5 +7,5 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 }
 
 func mapHandler(w http.ResponseWriter, _ *http.Request) {
-	writePlainText(w, endpointGuide)
+	writePlainText(w, modelGuide())
 }

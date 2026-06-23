@@ -5,18 +5,19 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"regexp"
 	"testing"
 )
 
 func TestRequestLogger(t *testing.T) {
 	tests := []struct {
-		name       string
-		path       string
-		wantStatus string
+		name    string
+		path    string
+		wantLog string
 	}{
-		{name: "success", path: "/?source=test", wantStatus: "status=200"},
-		{name: "not found", path: "/missing", wantStatus: "status=404"},
+		{name: "success", path: "/", wantLog: `^\[GET\]\[/\]\[200\]\[[^]]+\]\n$`},
+		{name: "invalid query", path: "/?source=test", wantLog: `^\[GET\]\[/\]\[400\]\[[^]]+\]\n$`},
+		{name: "not found", path: "/missing", wantLog: `^\[GET\]\[/missing\]\[404\]\[[^]]+\]\n$`},
 	}
 
 	for _, tt := range tests {
@@ -28,18 +29,8 @@ func TestRequestLogger(t *testing.T) {
 
 			newHandler(logger).ServeHTTP(response, request)
 
-			entry := output.String()
-			for _, want := range []string{
-				"request method=GET",
-				"path=\"" + tt.path + "\"",
-				tt.wantStatus,
-				"bytes=",
-				"duration=",
-				"remote=",
-			} {
-				if !strings.Contains(entry, want) {
-					t.Errorf("log entry %q does not contain %q", entry, want)
-				}
+			if !regexp.MustCompile(tt.wantLog).MatchString(output.String()) {
+				t.Errorf("log entry = %q, want match for %q", output.String(), tt.wantLog)
 			}
 		})
 	}

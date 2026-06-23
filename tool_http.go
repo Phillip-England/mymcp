@@ -10,7 +10,7 @@ import (
 const maxPathRequestSize = 4096
 
 func directoryRequestPath(w http.ResponseWriter, r *http.Request) (string, bool) {
-	path, ok := sandboxedPathFromBody(
+	path, ok := pathFromBody(
 		w,
 		r,
 		"request body must contain a directory path of at most 4096 bytes",
@@ -36,7 +36,7 @@ func directoryRequestPath(w http.ResponseWriter, r *http.Request) (string, bool)
 	return path, true
 }
 
-func sandboxedPathFromBody(w http.ResponseWriter, r *http.Request, oversizedMessage, emptyMessage string) (string, bool) {
+func pathFromBody(w http.ResponseWriter, r *http.Request, oversizedMessage, emptyMessage string) (string, bool) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxPathRequestSize))
 	if err != nil {
 		http.Error(w, oversizedMessage, http.StatusBadRequest)
@@ -46,10 +46,6 @@ func sandboxedPathFromBody(w http.ResponseWriter, r *http.Request, oversizedMess
 	path := strings.TrimSpace(string(body))
 	if path == "" {
 		http.Error(w, emptyMessage, http.StatusBadRequest)
-		return "", false
-	}
-	path, err = resolveSandboxPath(r, path)
-	if handlePathResolutionError(w, err) {
 		return "", false
 	}
 	return path, true

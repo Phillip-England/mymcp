@@ -9,7 +9,6 @@ import (
 type responseMetrics struct {
 	http.ResponseWriter
 	status int
-	bytes  int
 }
 
 func (w *responseMetrics) WriteHeader(status int) {
@@ -24,9 +23,7 @@ func (w *responseMetrics) Write(body []byte) (int, error) {
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)
 	}
-	n, err := w.ResponseWriter.Write(body)
-	w.bytes += n
-	return n, err
+	return w.ResponseWriter.Write(body)
 }
 
 func (w *responseMetrics) Unwrap() http.ResponseWriter {
@@ -45,13 +42,11 @@ func requestLogger(logger *log.Logger) func(http.Handler) http.Handler {
 			}
 
 			logger.Printf(
-				"request method=%s path=%q status=%d bytes=%d duration=%s remote=%q",
+				"[%s][%s][%d][%s]",
 				r.Method,
-				r.URL.RequestURI(),
+				r.URL.Path,
 				metrics.status,
-				metrics.bytes,
 				time.Since(started).Round(time.Microsecond),
-				r.RemoteAddr,
 			)
 		})
 	}
